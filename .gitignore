@@ -1,0 +1,33 @@
+
+.venv/
+__pycache__/
+build/
+install/
+log/
+*.pyc
+.DS_Store
+.env
+# docs build
+site/
+
+# ---- VS Code (do not commit workspace caches) ----
+.vscode/browse.vc.db
+.vscode/browse.vc.db-*
+.vscode/ipch/
+.vscode/*.log
+.vscode/
+**/.vscode/
+
+# If you want to keep settings.json/c_cpp_properties.json, don't ignore all of .vscode.
+# Otherwise uncomment the next line:
+# .vscode/
+
+# ---- ROS2/colcon build artifacts ----
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+
+# VSCode DB anywhere in repo
+**/.vscode/browse.vc.db
+**/.vscode/browse.vc.db-*
+
