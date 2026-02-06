@@ -31,3 +31,18 @@ ros2_ws/log/
 **/.vscode/browse.vc.db
 **/.vscode/browse.vc.db-*
 
+# ESP-IDF
+**/build/
+**/sdkconfig
+**/sdkconfig.old
+**/.idf_cache/
+**/managed_components/
+
+# Experiments
+experiments/logs/
+experiments/results/
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/
