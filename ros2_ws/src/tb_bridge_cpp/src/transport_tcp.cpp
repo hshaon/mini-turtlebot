@@ -5,6 +5,7 @@
 
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <netinet/tcp.h>
 #include <netdb.h>
 #include <unistd.h>
 
@@ -33,6 +34,8 @@ static int connect_tcp(const std::string& host, int port)
     s = ::socket(p->ai_family, p->ai_socktype, p->ai_protocol);
     if (s < 0) continue;
     if (::connect(s, p->ai_addr, p->ai_addrlen) == 0) {
+      int one = 1;
+      (void)::setsockopt(s, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
       break; // success
     }
     ::close(s);

@@ -3,6 +3,7 @@
 #include "freertos/task.h"
 
 #include "tb_wifi.h"
+#include "tb_motors.h"
 
 // forward declare your TCP server task from your file
 void tcp_server_task(void *arg);
@@ -18,6 +19,8 @@ void app_main(void)
     vTaskDelay(pdMS_TO_TICKS(3000));
     esp_restart();
   }
+
+  tb_motors_init();
 
   xTaskCreatePinnedToCore(tcp_server_task, "tb_tcp_server", 8192, NULL, 5, NULL, 1);
 }

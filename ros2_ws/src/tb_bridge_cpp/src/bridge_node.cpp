@@ -4,10 +4,10 @@
 #include <unordered_map>
 #include <chrono>
 #include <mutex>
+#include <vector>
+#include <algorithm>
 
-rclcpp::TimerBase::SharedPtr hb_timer_;
-std::mutex rtt_mtx_;
-std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> pending_;
+#include "rcl_interfaces/msg/set_parameters_result.hpp"
 
 namespace tb_bridge_cpp
 {
@@ -25,6 +25,12 @@ BridgeNode::BridgeNode(const rclcpp::NodeOptions & options)
   transport_mode_ = this->declare_parameter<std::string>("transport_mode", "ws_jsonl");
   cmd_timeout_ms_ = this->declare_parameter<int>("cmd_timeout_ms", 500);
   send_rate_hz_   = this->declare_parameter<double>("send_rate_hz", 20.0);
+
+  bench_enable_ = this->declare_parameter<bool>("bench_enable", true);
+  bench_hz_ = this->declare_parameter<double>("bench_heartbeat_hz", 1.0);
+  bench_window_ = this->declare_parameter<int>("bench_window_size", 200);
+  if (bench_window_ < 20) bench_window_ = 20;
+  if (bench_window_ > 2000) bench_window_ = 2000;
 
   // Update stats visible via service
   stats_.transport_mode = transport_mode_;
@@ -61,30 +67,14 @@ BridgeNode::BridgeNode(const rclcpp::NodeOptions & options)
     stats_.transport_mode = "tcp_bin";
     stats_.status = "connecting";
 
-  tcp_->start(robot_ip_, port_, [this](const Frame& f) {
-    if (f.type == MsgType::ACK) {
-      auto now = std::chrono::steady_clock::now();
-      std::chrono::steady_clock::time_point t0;
-      bool found = false;
-
-      {
-        std::lock_guard<std::mutex> lk(rtt_mtx_);
-        auto it = pending_.find(f.seq);
-        if (it != pending_.end()) {
-          t0 = it->second;
-          pending_.erase(it);
-          found = true;
-        }
+    tcp_->start(robot_ip_, port_, [this](const Frame& f) {
+      if (f.type == MsgType::ACK) {
+        handle_ack_(f.seq);
+        return;
       }
 
-      if (found) {
-        auto rtt_ms = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(now - t0).count();
-        // TODO: feed into p50/p95/p99 estimator
-        // For now just store as p50 to prove it works
-        stats_.rtt_ms_p50.store((float)rtt_ms);
-      }
-    }
-  });
+      // TODO: handle telemetry frames here
+    });
 
     RCLCPP_INFO(this->get_logger(), "TCP transport started: %s:%d", robot_ip_.c_str(), port_);
   } else {
@@ -94,27 +84,36 @@ BridgeNode::BridgeNode(const rclcpp::NodeOptions & options)
     RCLCPP_INFO(this->get_logger(), "target_url=%s", make_ws_url().c_str());
   }
 
-  hb_timer_ = this->create_wall_timer(
-    std::chrono::seconds(1),
-    [this]() {
-      if (!(tcp_ && tcp_->is_connected())) return;
-
-      uint32_t s = seq_.fetch_add(1);
-      auto now = std::chrono::steady_clock::now();
+  param_cb_handle_ = this->add_on_set_parameters_callback(
+    [this](const std::vector<rclcpp::Parameter>& params) {
+      bool new_enable = bench_enable_;
+      double new_hz = bench_hz_;
+      int new_window = bench_window_;
+      for (const auto& p : params) {
+        if (p.get_name() == "bench_enable") new_enable = p.as_bool();
+        if (p.get_name() == "bench_heartbeat_hz") new_hz = p.as_double();
+        if (p.get_name() == "bench_window_size") new_window = p.as_int();
+      }
+      if (new_window < 20) new_window = 20;
+      if (new_window > 2000) new_window = 2000;
 
       {
-        std::lock_guard<std::mutex> lk(rtt_mtx_);
-        pending_[s] = now;
-        // prevent unbounded growth
-        if (pending_.size() > 2000) pending_.erase(pending_.begin());
+        std::lock_guard<std::mutex> lk(bench_mtx_);
+        bench_enable_ = new_enable;
+        bench_hz_ = new_hz;
+        bench_window_ = new_window;
       }
 
-      auto bytes = encode_frame(MsgType::HEARTBEAT, 0, s, nullptr, 0);
-      if (!tcp_->send_bytes(bytes.data(), bytes.size())) {
-        stats_.tx_dropped.fetch_add(1);
-      }
+      start_or_stop_benchmark_timer_();
+
+      rcl_interfaces::msg::SetParametersResult r;
+      r.successful = true;
+      r.reason = "ok";
+      return r;
     }
   );
+
+  start_or_stop_benchmark_timer_();
 
   // Log resolved URL for sanity
   const auto url = make_ws_url();
@@ -266,5 +265,99 @@ std::string BridgeNode::make_ws_url() const
   return ss.str();
 }
 
-}  // namespace tb_bridge_cpp
+void BridgeNode::start_or_stop_benchmark_timer_()
+{
+  // stop existing timer
+  hb_timer_.reset();
 
+  bool enable = false;
+  double hz = 0.0;
+  {
+    std::lock_guard<std::mutex> lk(bench_mtx_);
+    enable = bench_enable_;
+    hz = bench_hz_;
+  }
+
+  if (transport_mode_ != "tcp_bin" || !enable || hz <= 0.0) {
+    std::lock_guard<std::mutex> lk(bench_mtx_);
+    pending_.clear();
+    rtt_window_.clear();
+    stats_.rtt_ms_p50.store(0.0f);
+    stats_.rtt_ms_p95.store(0.0f);
+    stats_.rtt_ms_p99.store(0.0f);
+    return;
+  }
+
+  auto period = std::chrono::duration<double>(1.0 / hz);
+
+  hb_timer_ = this->create_wall_timer(
+    std::chrono::duration_cast<std::chrono::nanoseconds>(period),
+    [this]() {
+      {
+        std::lock_guard<std::mutex> lk(bench_mtx_);
+        if (!bench_enable_) return;
+      }
+      if (!(tcp_ && tcp_->is_connected())) return;
+
+      uint32_t s = seq_.fetch_add(1);
+      auto now = std::chrono::steady_clock::now();
+
+      {
+        std::lock_guard<std::mutex> lk(bench_mtx_);
+        pending_[s] = now;
+        // keep pending bounded
+        size_t max_pending = 4u * static_cast<size_t>(bench_window_);
+        if (pending_.size() > max_pending) pending_.erase(pending_.begin());
+      }
+
+      auto bytes = encode_frame(MsgType::HEARTBEAT, 0, s, nullptr, 0);
+      if (!tcp_->send_bytes(bytes.data(), bytes.size())) {
+        stats_.tx_dropped.fetch_add(1);
+      }
+    }
+  );
+}
+
+void BridgeNode::handle_ack_(uint32_t seq)
+{
+  auto now = std::chrono::steady_clock::now();
+
+  std::lock_guard<std::mutex> lk(bench_mtx_);
+  if (!bench_enable_) return;
+  auto it = pending_.find(seq);
+  if (it == pending_.end()) return;
+
+  auto t0 = it->second;
+  pending_.erase(it);
+
+  float rtt_ms = static_cast<float>(
+    std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(now - t0).count());
+
+  rtt_window_.push_back(rtt_ms);
+  while (static_cast<int>(rtt_window_.size()) > bench_window_) rtt_window_.pop_front();
+
+  update_rtt_stats_locked_();
+}
+
+void BridgeNode::update_rtt_stats_locked_()
+{
+  if (rtt_window_.empty()) return;
+
+  // Copy + sort for percentiles (window is small)
+  std::vector<float> v(rtt_window_.begin(), rtt_window_.end());
+  std::sort(v.begin(), v.end());
+
+  auto pct = [&](double p) -> float {
+    double idx = p * static_cast<double>(v.size() - 1);
+    size_t i0 = static_cast<size_t>(idx);
+    size_t i1 = std::min(i0 + 1, v.size() - 1);
+    double frac = idx - static_cast<double>(i0);
+    return static_cast<float>(v[i0] * (1.0 - frac) + v[i1] * frac);
+  };
+
+  stats_.rtt_ms_p50.store(pct(0.50));
+  stats_.rtt_ms_p95.store(pct(0.95));
+  stats_.rtt_ms_p99.store(pct(0.99));
+}
+
+}  // namespace tb_bridge_cpp

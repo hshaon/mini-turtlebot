@@ -11,12 +11,18 @@
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
 #include "lwip/inet.h"
+#include "lwip/tcp.h"
 
+#include "tb_motors.h"
 static const char *TAG = "tb_tcp";
 
 #define TB_MAGIC0 0x54  // 'T'
 #define TB_MAGIC1 0x42  // 'B'
 #define TB_HDR_LEN 10
+
+// Simple bring-up scaling for CMD_VEL (tune for your robot).
+#define TB_MAX_VX_MPS  0.25f
+#define TB_MAX_WZ_RPS  1.0f
 
 typedef enum {
   TB_MSG_CMD_VEL       = 0x01,
@@ -94,10 +100,8 @@ typedef struct __attribute__((packed)) {
 static void handle_frame(int sock, uint8_t type, uint32_t seq, const uint8_t *payload, uint16_t len)
 {
   if (type == TB_MSG_HEARTBEAT) {
-    // ACK payload: echoed seq (4 bytes)
-    uint8_t ack_payload[4];
-    wr32_le(ack_payload, seq);
-    (void)send_frame(sock, TB_MSG_ACK, 0, seq, ack_payload, sizeof(ack_payload));
+    // ACK payload is empty (seq is already in header).
+    (void)send_frame(sock, TB_MSG_ACK, 0, seq, NULL, 0);
     return;
   }
 
@@ -111,6 +115,14 @@ static void handle_frame(int sock, uint8_t type, uint32_t seq, const uint8_t *pa
     float vx = v[0];
     float wz = v[5];
     ESP_LOGI(TAG, "CMD_VEL seq=%lu vx=%.3f wz=%.3f", (unsigned long)seq, (double)vx, (double)wz);
+
+    float vx_n = (TB_MAX_VX_MPS > 0.0f) ? (vx / TB_MAX_VX_MPS) : 0.0f;
+    float wz_n = (TB_MAX_WZ_RPS > 0.0f) ? (wz / TB_MAX_WZ_RPS) : 0.0f;
+
+    float speed_l = vx_n - wz_n;
+    float speed_r = vx_n + wz_n;
+
+    tb_motors_set(speed_l, speed_r);
     return;
   }
 
@@ -186,6 +198,9 @@ void tcp_server_task(void *arg)
       vTaskDelay(pdMS_TO_TICKS(200));
       continue;
     }
+
+    int one = 1;
+    setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
 
     ESP_LOGI(TAG, "client connected");
     stream_len = 0;

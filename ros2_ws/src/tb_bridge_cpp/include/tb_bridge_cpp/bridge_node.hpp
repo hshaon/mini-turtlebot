@@ -11,6 +11,11 @@
 #include "tb_interfaces/srv/get_link_stats.hpp"
 #include "tb_bridge_cpp/framing.hpp"
 #include "tb_bridge_cpp/transport_tcp.hpp"
+#include <deque>
+#include <unordered_map>
+#include <mutex>
+#include <chrono>
+#include <vector>
 
 
 namespace tb_bridge_cpp
@@ -93,6 +98,22 @@ private:
   std::unique_ptr<TcpTransport> tcp_;
   std::atomic<uint32_t> seq_{1};
 
+  // Benchmark (heartbeat RTT)
+  rclcpp::TimerBase::SharedPtr hb_timer_;
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;
+
+  std::mutex bench_mtx_;
+  bool bench_enable_{true};
+  double bench_hz_{1.0};
+  int bench_window_{200};
+
+  std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> pending_;
+  std::deque<float> rtt_window_;
+
+  void start_or_stop_benchmark_timer_();
+  void handle_ack_(uint32_t seq);
+  void update_rtt_stats_locked_();  // expects bench_mtx_ locked
+
 
   // ROS entities
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr sub_cmd_vel_;
@@ -101,4 +122,3 @@ private:
 };
 
 }  // namespace tb_bridge_cpp
-

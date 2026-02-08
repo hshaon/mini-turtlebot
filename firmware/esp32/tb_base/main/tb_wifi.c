@@ -68,6 +68,8 @@ esp_err_t tb_wifi_init_and_connect(void)
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
   ESP_ERROR_CHECK(esp_wifi_start());
+  // Disable Wi-Fi power save to reduce latency spikes.
+  ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
 
   EventBits_t bits = xEventGroupWaitBits(
       s_wifi_event_group,
