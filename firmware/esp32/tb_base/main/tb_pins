@@ -1,0 +1,43 @@
+#pragma once
+#include "driver/gpio.h"
+
+// I2C
+#define TB_I2C_SDA_GPIO   GPIO_NUM_11
+#define TB_I2C_SCL_GPIO   GPIO_NUM_12
+
+// Motor driver control (DRV8835 inputs)
+#define TB_MTA1_GPIO      GPIO_NUM_13   // AIN1/APHASE
+#define TB_MTA2_GPIO      GPIO_NUM_14   // AIN2/AENBL
+#define TB_MTB1_GPIO      GPIO_NUM_17   // BIN1/BPHASE
+#define TB_MTB2_GPIO      GPIO_NUM_18   // BIN2/BENBL
+
+// Encoders / feedback
+#define TB_MEA1_GPIO      GPIO_NUM_21
+#define TB_MEA2_GPIO      GPIO_NUM_38
+#define TB_MEB1_GPIO      GPIO_NUM_47
+#define TB_MEB2_GPIO      GPIO_NUM_48
+
+// IR sensors
+#define TB_IRD1_GPIO      GPIO_NUM_5
+#define TB_IRD2_GPIO      GPIO_NUM_2
+
+// IMU interrupt
+#define TB_IMU_INT_GPIO   GPIO_NUM_8
+
+// Servos (signals)
+#define TB_SRV1_GPIO      GPIO_NUM_3
+#define TB_SRV2_GPIO      GPIO_NUM_4
+#define TB_SRV3_GPIO      GPIO_NUM_6
+#define TB_SRV4_GPIO      GPIO_NUM_7
+
+// LEDs
+#define TB_LED1_GPIO      GPIO_NUM_9
+#define TB_LED2_GPIO      GPIO_NUM_10
+
+// Switches
+#define TB_SW1_GPIO       GPIO_NUM_46
+#define TB_SW2_GPIO       GPIO_NUM_0
+
+// UART (console/expansion/lidar)
+#define TB_UART_TX_GPIO   GPIO_NUM_43
+#define TB_UART_RX_GPIO   GPIO_NUM_44
