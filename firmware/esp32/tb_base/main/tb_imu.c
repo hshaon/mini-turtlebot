@@ -1,9 +1,10 @@
 #include <string.h>
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 #include "esp_log.h"
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
 
 #include "tb_imu.h"
 
@@ -20,36 +21,17 @@ static const char *TAG = "tb_imu";
 #define REG_WHO_AM_I     0x75
 
 static bool s_imu_ok = false;
+static i2c_master_dev_handle_t s_dev = NULL;
 
 static esp_err_t i2c_write_reg(uint8_t reg, uint8_t val)
 {
-  i2c_cmd_handle_t h = i2c_cmd_link_create();
-  i2c_master_start(h);
-  i2c_master_write_byte(h, (MPU6050_ADDR << 1) | I2C_MASTER_WRITE, true);
-  i2c_master_write_byte(h, reg, true);
-  i2c_master_write_byte(h, val, true);
-  i2c_master_stop(h);
-  esp_err_t r = i2c_master_cmd_begin(I2C_NUM_0, h, pdMS_TO_TICKS(50));
-  i2c_cmd_link_delete(h);
-  return r;
+  uint8_t buf[2] = {reg, val};
+  return i2c_master_transmit(s_dev, buf, sizeof(buf), -1);
 }
 
 static esp_err_t i2c_read_reg(uint8_t reg, uint8_t *buf, size_t len)
 {
-  i2c_cmd_handle_t h = i2c_cmd_link_create();
-  i2c_master_start(h);
-  i2c_master_write_byte(h, (MPU6050_ADDR << 1) | I2C_MASTER_WRITE, true);
-  i2c_master_write_byte(h, reg, true);
-  i2c_master_start(h);
-  i2c_master_write_byte(h, (MPU6050_ADDR << 1) | I2C_MASTER_READ, true);
-  if (len > 1) {
-    i2c_master_read(h, buf, len - 1, I2C_MASTER_ACK);
-  }
-  i2c_master_read_byte(h, buf + len - 1, I2C_MASTER_NACK);
-  i2c_master_stop(h);
-  esp_err_t r = i2c_master_cmd_begin(I2C_NUM_0, h, pdMS_TO_TICKS(50));
-  i2c_cmd_link_delete(h);
-  return r;
+  return i2c_master_transmit_receive(s_dev, &reg, 1, buf, len, -1);
 }
 
 bool tb_imu_is_ready(void)
@@ -57,10 +39,21 @@ bool tb_imu_is_ready(void)
   return s_imu_ok;
 }
 
-esp_err_t tb_imu_init(void)
+esp_err_t tb_imu_init(i2c_master_bus_handle_t bus)
 {
+  if (!bus) return ESP_ERR_INVALID_ARG;
+
+  i2c_device_config_t dev_cfg = {
+    .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+    .device_address = MPU6050_ADDR,
+    .scl_speed_hz = 400000,
+  };
+
+  esp_err_t r = i2c_master_bus_add_device(bus, &dev_cfg, &s_dev);
+  if (r != ESP_OK) return r;
+
   uint8_t who = 0;
-  esp_err_t r = i2c_read_reg(REG_WHO_AM_I, &who, 1);
+  r = i2c_read_reg(REG_WHO_AM_I, &who, 1);
   if (r != ESP_OK) {
     ESP_LOGW(TAG, "WHO_AM_I read failed");
   } else {

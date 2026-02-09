@@ -2,11 +2,10 @@
 #include <stdio.h>
 
 #include "esp_log.h"
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
 
 #include "tb_oled.h"
 #include "tb_font6x8.h"
-#include "tb_pins"
 
 static const char *TAG = "tb_oled";
 
@@ -16,31 +15,25 @@ static const char *TAG = "tb_oled";
 #define OLED_PAGES (OLED_H / 8)
 
 static uint8_t fb[OLED_W * OLED_PAGES];
+static i2c_master_dev_handle_t s_dev = NULL;
 
 static esp_err_t i2c_write_cmd(uint8_t cmd)
 {
-  i2c_cmd_handle_t h = i2c_cmd_link_create();
-  i2c_master_start(h);
-  i2c_master_write_byte(h, (OLED_ADDR << 1) | I2C_MASTER_WRITE, true);
-  i2c_master_write_byte(h, 0x00, true);
-  i2c_master_write_byte(h, cmd, true);
-  i2c_master_stop(h);
-  esp_err_t r = i2c_master_cmd_begin(I2C_NUM_0, h, pdMS_TO_TICKS(50));
-  i2c_cmd_link_delete(h);
-  return r;
+  if (!s_dev) return ESP_ERR_INVALID_STATE;
+  uint8_t buf[2] = {0x00, cmd};
+  return i2c_master_transmit(s_dev, buf, sizeof(buf), -1);
 }
 
 static esp_err_t i2c_write_data(const uint8_t *data, size_t len)
 {
-  i2c_cmd_handle_t h = i2c_cmd_link_create();
-  i2c_master_start(h);
-  i2c_master_write_byte(h, (OLED_ADDR << 1) | I2C_MASTER_WRITE, true);
-  i2c_master_write_byte(h, 0x40, true);
-  i2c_master_write(h, (uint8_t*)data, len, true);
-  i2c_master_stop(h);
-  esp_err_t r = i2c_master_cmd_begin(I2C_NUM_0, h, pdMS_TO_TICKS(100));
-  i2c_cmd_link_delete(h);
-  return r;
+  if (!s_dev) return ESP_ERR_INVALID_STATE;
+  if (!data || len == 0) return ESP_OK;
+
+  uint8_t buf[OLED_W + 1];
+  if (len > OLED_W) return ESP_ERR_INVALID_ARG;
+  buf[0] = 0x40;
+  memcpy(&buf[1], data, len);
+  return i2c_master_transmit(s_dev, buf, len + 1, -1);
 }
 
 static void fb_set_page_col(uint8_t page, uint8_t col)
@@ -74,18 +67,20 @@ static void draw_text_6x8(int x, int page, const char *s)
   }
 }
 
-bool tb_oled_init(void)
+bool tb_oled_init(i2c_master_bus_handle_t bus)
 {
-  i2c_config_t conf = {
-    .mode = I2C_MODE_MASTER,
-    .sda_io_num = TB_I2C_SDA_GPIO,
-    .scl_io_num = TB_I2C_SCL_GPIO,
-    .sda_pullup_en = GPIO_PULLUP_ENABLE,
-    .scl_pullup_en = GPIO_PULLUP_ENABLE,
-    .master.clk_speed = 400000,
+  if (!bus) return false;
+
+  i2c_device_config_t dev_cfg = {
+    .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+    .device_address = OLED_ADDR,
+    .scl_speed_hz = 400000,
   };
-  ESP_ERROR_CHECK(i2c_param_config(I2C_NUM_0, &conf));
-  ESP_ERROR_CHECK(i2c_driver_install(I2C_NUM_0, conf.mode, 0, 0, 0));
+
+  if (i2c_master_bus_add_device(bus, &dev_cfg, &s_dev) != ESP_OK) {
+    ESP_LOGW(TAG, "OLED device add failed");
+    return false;
+  }
 
   if (i2c_write_cmd(0xAE) != ESP_OK) {
     ESP_LOGW(TAG, "OLED not responding at 0x3C (check wiring/address)");

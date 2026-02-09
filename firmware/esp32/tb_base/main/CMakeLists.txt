@@ -5,9 +5,11 @@ idf_component_register(
     "tb_oled.c"
     "tb_wifi.c"
     "tb_tcp_server.c"
+    "tb_i2c.c"
     "tb_imu.c"
     "tb_ir.c"
     "tb_tof.c"
+    "vl53l0x.c"
   INCLUDE_DIRS
     "."
 )
