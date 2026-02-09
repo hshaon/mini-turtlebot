@@ -8,10 +8,14 @@ namespace tb_bridge_cpp
 enum class MsgType : uint8_t
 {
   CMD_VEL = 0x01,
+  SET_ID = 0x03,
   SET_TELEMETRY = 0x02,
   HEARTBEAT = 0x10,
   ACK = 0x11,
   TEXT_LOG = 0x20,
+  IMU = 0x30,
+  IR = 0x31,
+  TOF = 0x32,
 };
 
 struct Frame

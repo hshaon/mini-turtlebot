@@ -12,6 +12,10 @@ config TB_TCP_PORT
     int "TCP Server Port"
     default 9000
 
+config TB_ROBOT_ID
+    string "Robot ID (shown on OLED)"
+    default "tb_01"
+
 menu "Pin Mapping"
 
 config TB_I2C_SDA

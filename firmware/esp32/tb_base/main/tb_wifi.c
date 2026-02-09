@@ -1,4 +1,5 @@
 #include <string.h>
+#include <stdio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 
@@ -12,6 +13,7 @@
 static const char *TAG = "tb_wifi";
 static EventGroupHandle_t s_wifi_event_group;
 static int s_retry = 0;
+static char s_ip_str[16] = "0.0.0.0";
 
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
@@ -33,10 +35,16 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     }
   } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
     ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+    snprintf(s_ip_str, sizeof(s_ip_str), IPSTR, IP2STR(&event->ip_info.ip));
     ESP_LOGI(TAG, "got ip: " IPSTR, IP2STR(&event->ip_info.ip));
     s_retry = 0;
     xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
   }
+}
+
+const char* tb_wifi_get_ip_str(void)
+{
+  return s_ip_str;
 }
 
 esp_err_t tb_wifi_init_and_connect(void)

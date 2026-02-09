@@ -2,8 +2,12 @@ idf_component_register(
   SRCS
     "app_main.c"
     "tb_motors.c"
+    "tb_oled.c"
     "tb_wifi.c"
     "tb_tcp_server.c"
+    "tb_imu.c"
+    "tb_ir.c"
+    "tb_tof.c"
   INCLUDE_DIRS
     "."
 )

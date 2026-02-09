@@ -6,6 +6,9 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/twist.hpp"
+#include "sensor_msgs/msg/imu.hpp"
+#include "sensor_msgs/msg/range.hpp"
+#include "tb_interfaces/msg/ir_state.hpp"
 
 #include "tb_interfaces/srv/set_telemetry.hpp"
 #include "tb_interfaces/srv/get_link_stats.hpp"
@@ -35,8 +38,8 @@ struct TelemetryConfig
   bool enable_battery{false};
   float battery_rate_hz{0.0f};
 
-  bool enable_lidar360{false};
-  float lidar360_rate_hz{0.0f};
+  bool enable_tof{false};
+  float tof_rate_hz{0.0f};
 
   std::string profile_name;
 };
@@ -114,11 +117,19 @@ private:
   void handle_ack_(uint32_t seq);
   void update_rtt_stats_locked_();  // expects bench_mtx_ locked
 
+  void send_set_id_();
+
+  rclcpp::TimerBase::SharedPtr set_id_timer_;
+  bool set_id_sent_{false};
 
   // ROS entities
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr sub_cmd_vel_;
   rclcpp::Service<tb_interfaces::srv::SetTelemetry>::SharedPtr srv_set_telemetry_;
   rclcpp::Service<tb_interfaces::srv::GetLinkStats>::SharedPtr srv_get_link_stats_;
+
+  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr pub_imu_;
+  rclcpp::Publisher<tb_interfaces::msg::IRState>::SharedPtr pub_ir_;
+  rclcpp::Publisher<sensor_msgs::msg::Range>::SharedPtr pub_tof_;
 };
 
 }  // namespace tb_bridge_cpp

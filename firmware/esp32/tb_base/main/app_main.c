@@ -3,7 +3,11 @@
 #include "freertos/task.h"
 
 #include "tb_wifi.h"
+#include "tb_oled.h"
 #include "tb_motors.h"
+#include "tb_imu.h"
+#include "tb_ir.h"
+#include "tb_tof.h"
 
 // forward declare your TCP server task from your file
 void tcp_server_task(void *arg);
@@ -20,7 +24,21 @@ void app_main(void)
     esp_restart();
   }
 
+  if (tb_oled_init()) {
+    tb_oled_show_status("---", CONFIG_TB_WIFI_SSID, tb_wifi_get_ip_str());
+  }
+
   tb_motors_init();
+
+  if (tb_imu_init() != ESP_OK) {
+    ESP_LOGW(TAG, "IMU init failed");
+  }
+  if (tb_ir_init() != ESP_OK) {
+    ESP_LOGW(TAG, "IR init failed");
+  }
+  if (tb_tof_init() != ESP_OK) {
+    ESP_LOGW(TAG, "ToF init failed");
+  }
 
   xTaskCreatePinnedToCore(tcp_server_task, "tb_tcp_server", 8192, NULL, 5, NULL, 1);
 }

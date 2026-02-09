@@ -6,6 +6,7 @@
 #include <mutex>
 #include <vector>
 #include <algorithm>
+#include <cstring>
 
 #include "rcl_interfaces/msg/set_parameters_result.hpp"
 
@@ -43,6 +44,10 @@ BridgeNode::BridgeNode(const rclcpp::NodeOptions & options)
     rclcpp::QoS(10),
     [this](const geometry_msgs::msg::Twist & msg) { this->on_cmd_vel(msg); });
 
+  pub_imu_ = this->create_publisher<sensor_msgs::msg::Imu>("imu/data_raw", rclcpp::QoS(20));
+  pub_ir_ = this->create_publisher<tb_interfaces::msg::IRState>("ir/state", rclcpp::QoS(10));
+  pub_tof_ = this->create_publisher<sensor_msgs::msg::Range>("tof/range", rclcpp::QoS(10));
+
   // ---- Services in namespace ----
   srv_set_telemetry_ = this->create_service<tb_interfaces::srv::SetTelemetry>(
     "bridge/set_telemetry",
@@ -73,7 +78,70 @@ BridgeNode::BridgeNode(const rclcpp::NodeOptions & options)
         return;
       }
 
-      // TODO: handle telemetry frames here
+      if (f.type == MsgType::IMU) {
+        if (f.payload.size() != 6 * sizeof(float)) {
+          stats_.rx_dropped.fetch_add(1);
+          return;
+        }
+        float v[6];
+        std::memcpy(v, f.payload.data(), sizeof(v));
+
+        sensor_msgs::msg::Imu msg;
+        msg.header.stamp = this->now();
+        msg.header.frame_id = "imu_link";
+
+        msg.linear_acceleration.x = v[0];
+        msg.linear_acceleration.y = v[1];
+        msg.linear_acceleration.z = v[2];
+
+        msg.angular_velocity.x = v[3];
+        msg.angular_velocity.y = v[4];
+        msg.angular_velocity.z = v[5];
+
+        msg.orientation_covariance[0] = -1.0;
+
+        pub_imu_->publish(msg);
+        return;
+      }
+
+      if (f.type == MsgType::IR) {
+        if (f.payload.size() != 2 * sizeof(float)) {
+          stats_.rx_dropped.fetch_add(1);
+          return;
+        }
+        float v[2];
+        std::memcpy(v, f.payload.data(), sizeof(v));
+
+        tb_interfaces::msg::IRState msg;
+        msg.header.stamp = this->now();
+        msg.header.frame_id = "ir_link";
+        msg.left = v[0];
+        msg.right = v[1];
+
+        pub_ir_->publish(msg);
+        return;
+      }
+
+      if (f.type == MsgType::TOF) {
+        if (f.payload.size() != sizeof(float)) {
+          stats_.rx_dropped.fetch_add(1);
+          return;
+        }
+        float range_m = 0.0f;
+        std::memcpy(&range_m, f.payload.data(), sizeof(range_m));
+
+        sensor_msgs::msg::Range msg;
+        msg.header.stamp = this->now();
+        msg.header.frame_id = "tof_link";
+        msg.radiation_type = sensor_msgs::msg::Range::INFRARED;
+        msg.field_of_view = 0.44f;
+        msg.min_range = 0.03f;
+        msg.max_range = 2.0f;
+        msg.range = range_m;
+
+        pub_tof_->publish(msg);
+        return;
+      }
     });
 
     RCLCPP_INFO(this->get_logger(), "TCP transport started: %s:%d", robot_ip_.c_str(), port_);
@@ -114,6 +182,21 @@ BridgeNode::BridgeNode(const rclcpp::NodeOptions & options)
   );
 
   start_or_stop_benchmark_timer_();
+
+  if (transport_mode_ == "tcp_bin") {
+    set_id_timer_ = this->create_wall_timer(
+      std::chrono::seconds(1),
+      [this]() {
+        if (!(tcp_ && tcp_->is_connected())) {
+          set_id_sent_ = false;
+          return;
+        }
+        if (set_id_sent_) return;
+        send_set_id_();
+        set_id_sent_ = true;
+      }
+    );
+  }
 
   // Log resolved URL for sanity
   const auto url = make_ws_url();
@@ -175,8 +258,8 @@ void BridgeNode::on_set_telemetry(
   telemetry_.enable_battery = req->enable_battery;
   telemetry_.battery_rate_hz = req->battery_rate_hz;
 
-  telemetry_.enable_lidar360 = req->enable_lidar360;
-  telemetry_.lidar360_rate_hz = req->lidar360_rate_hz;
+  telemetry_.enable_tof = req->enable_tof;
+  telemetry_.tof_rate_hz = req->tof_rate_hz;
 
   telemetry_.profile_name = req->profile_name;
 
@@ -190,8 +273,8 @@ void BridgeNode::on_set_telemetry(
     float   motor_rate_hz;
     uint8_t enable_batt;
     float   batt_rate_hz;
-    uint8_t enable_lidar;
-    float   lidar_rate_hz;
+    uint8_t enable_tof;
+    float   tof_rate_hz;
   } cfg;
 
   cfg.enable_imu    = telemetry_.enable_imu ? 1 : 0;
@@ -202,8 +285,8 @@ void BridgeNode::on_set_telemetry(
   cfg.motor_rate_hz = telemetry_.motor_state_rate_hz;
   cfg.enable_batt   = telemetry_.enable_battery ? 1 : 0;
   cfg.batt_rate_hz  = telemetry_.battery_rate_hz;
-  cfg.enable_lidar  = telemetry_.enable_lidar360 ? 1 : 0;
-  cfg.lidar_rate_hz = telemetry_.lidar360_rate_hz;
+  cfg.enable_tof    = telemetry_.enable_tof ? 1 : 0;
+  cfg.tof_rate_hz   = telemetry_.tof_rate_hz;
 
   uint32_t s = seq_.fetch_add(1);
 
@@ -263,6 +346,27 @@ std::string BridgeNode::make_ws_url() const
   std::ostringstream ss;
   ss << "ws://" << robot_ip_ << ":" << port_ << path_;
   return ss.str();
+}
+
+void BridgeNode::send_set_id_()
+{
+  if (!(tcp_ && tcp_->is_connected())) return;
+
+  const std::string id = robot_id_;
+  const uint16_t len = static_cast<uint16_t>(std::min<size_t>(id.size(), 15));
+
+  uint32_t s = seq_.fetch_add(1);
+  auto bytes = encode_frame(
+    MsgType::SET_ID,
+    0,
+    s,
+    reinterpret_cast<const uint8_t*>(id.data()),
+    len
+  );
+
+  if (!tcp_->send_bytes(bytes.data(), bytes.size())) {
+    stats_.tx_dropped.fetch_add(1);
+  }
 }
 
 void BridgeNode::start_or_stop_benchmark_timer_()

@@ -12,11 +12,10 @@ float32 motor_state_rate_hz
 bool enable_battery
 float32 battery_rate_hz
 
-bool enable_lidar360
-float32 lidar360_rate_hz
+bool enable_tof
+float32 tof_rate_hz
 
 string profile_name   # optional (e.g., "minimal", "classroom", "research")
 ---
 bool accepted
 string status
-
