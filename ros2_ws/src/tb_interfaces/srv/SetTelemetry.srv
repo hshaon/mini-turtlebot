@@ -15,6 +15,10 @@ float32 battery_rate_hz
 bool enable_tof
 float32 tof_rate_hz
 
+bool enable_lidar
+float32 lidar_rate_hz
+uint16 lidar_udp_port
+
 string profile_name   # optional (e.g., "minimal", "classroom", "research")
 ---
 bool accepted

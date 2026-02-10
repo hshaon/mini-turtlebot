@@ -7,6 +7,14 @@
 #include <vector>
 #include <algorithm>
 #include <cstring>
+#include <cmath>
+#include <limits>
+
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
 
 #include "rcl_interfaces/msg/set_parameters_result.hpp"
 
@@ -26,6 +34,21 @@ BridgeNode::BridgeNode(const rclcpp::NodeOptions & options)
   transport_mode_ = this->declare_parameter<std::string>("transport_mode", "ws_jsonl");
   cmd_timeout_ms_ = this->declare_parameter<int>("cmd_timeout_ms", 500);
   send_rate_hz_   = this->declare_parameter<double>("send_rate_hz", 20.0);
+
+  telemetry_.enable_imu = this->declare_parameter<bool>("enable_imu", false);
+  telemetry_.imu_rate_hz = this->declare_parameter<double>("imu_rate_hz", 50.0);
+  telemetry_.enable_ir = this->declare_parameter<bool>("enable_ir", false);
+  telemetry_.ir_rate_hz = this->declare_parameter<double>("ir_rate_hz", 10.0);
+  telemetry_.enable_tof = this->declare_parameter<bool>("enable_tof", false);
+  telemetry_.tof_rate_hz = this->declare_parameter<double>("tof_rate_hz", 10.0);
+  telemetry_.enable_lidar = this->declare_parameter<bool>("enable_lidar", false);
+  telemetry_.lidar_rate_hz = this->declare_parameter<double>("lidar_rate_hz", 1.0);
+
+  lidar_transport_ = this->declare_parameter<std::string>("lidar_transport", "udp");
+  lidar_udp_port_ = this->declare_parameter<int>("lidar_udp_port", 5601);
+  if (lidar_udp_port_ < 1) lidar_udp_port_ = 1;
+  if (lidar_udp_port_ > 65535) lidar_udp_port_ = 65535;
+  telemetry_.lidar_udp_port = static_cast<uint16_t>(lidar_udp_port_);
 
   bench_enable_ = this->declare_parameter<bool>("bench_enable", true);
   bench_hz_ = this->declare_parameter<double>("bench_heartbeat_hz", 1.0);
@@ -47,6 +70,7 @@ BridgeNode::BridgeNode(const rclcpp::NodeOptions & options)
   pub_imu_ = this->create_publisher<sensor_msgs::msg::Imu>("imu/data_raw", rclcpp::QoS(20));
   pub_ir_ = this->create_publisher<tb_interfaces::msg::IRState>("ir/state", rclcpp::QoS(10));
   pub_tof_ = this->create_publisher<sensor_msgs::msg::Range>("tof/range", rclcpp::QoS(10));
+  pub_lidar_ = this->create_publisher<sensor_msgs::msg::LaserScan>("lidar/scan", rclcpp::QoS(10));
 
   // ---- Services in namespace ----
   srv_set_telemetry_ = this->create_service<tb_interfaces::srv::SetTelemetry>(
@@ -157,10 +181,31 @@ BridgeNode::BridgeNode(const rclcpp::NodeOptions & options)
       bool new_enable = bench_enable_;
       double new_hz = bench_hz_;
       int new_window = bench_window_;
+      bool telemetry_changed = false;
+      bool lidar_udp_changed = false;
       for (const auto& p : params) {
         if (p.get_name() == "bench_enable") new_enable = p.as_bool();
         if (p.get_name() == "bench_heartbeat_hz") new_hz = p.as_double();
         if (p.get_name() == "bench_window_size") new_window = p.as_int();
+
+        if (p.get_name() == "enable_imu") { telemetry_.enable_imu = p.as_bool(); telemetry_changed = true; }
+        if (p.get_name() == "imu_rate_hz") { telemetry_.imu_rate_hz = p.as_double(); telemetry_changed = true; }
+        if (p.get_name() == "enable_ir") { telemetry_.enable_ir = p.as_bool(); telemetry_changed = true; }
+        if (p.get_name() == "ir_rate_hz") { telemetry_.ir_rate_hz = p.as_double(); telemetry_changed = true; }
+        if (p.get_name() == "enable_tof") { telemetry_.enable_tof = p.as_bool(); telemetry_changed = true; }
+        if (p.get_name() == "tof_rate_hz") { telemetry_.tof_rate_hz = p.as_double(); telemetry_changed = true; }
+        if (p.get_name() == "enable_lidar") { telemetry_.enable_lidar = p.as_bool(); telemetry_changed = true; }
+        if (p.get_name() == "lidar_rate_hz") { telemetry_.lidar_rate_hz = p.as_double(); telemetry_changed = true; }
+        if (p.get_name() == "lidar_transport") { lidar_transport_ = p.as_string(); lidar_udp_changed = true; }
+        if (p.get_name() == "lidar_udp_port") {
+          int port = p.as_int();
+          if (port < 1) port = 1;
+          if (port > 65535) port = 65535;
+          lidar_udp_port_ = port;
+          telemetry_.lidar_udp_port = static_cast<uint16_t>(lidar_udp_port_);
+          lidar_udp_changed = true;
+          telemetry_changed = true;
+        }
       }
       if (new_window < 20) new_window = 20;
       if (new_window > 2000) new_window = 2000;
@@ -174,6 +219,14 @@ BridgeNode::BridgeNode(const rclcpp::NodeOptions & options)
 
       start_or_stop_benchmark_timer_();
 
+      if (lidar_udp_changed) {
+        start_or_stop_lidar_udp_();
+      }
+
+      if (telemetry_changed && !telemetry_param_update_) {
+        send_telemetry_config_();
+      }
+
       rcl_interfaces::msg::SetParametersResult r;
       r.successful = true;
       r.reason = "ok";
@@ -182,6 +235,7 @@ BridgeNode::BridgeNode(const rclcpp::NodeOptions & options)
   );
 
   start_or_stop_benchmark_timer_();
+  start_or_stop_lidar_udp_();
 
   if (transport_mode_ == "tcp_bin") {
     set_id_timer_ = this->create_wall_timer(
@@ -205,6 +259,19 @@ BridgeNode::BridgeNode(const rclcpp::NodeOptions & options)
   RCLCPP_INFO(this->get_logger(), "target_url=%s", url.c_str());
 
   stats_.status = "ready_stub";
+}
+
+BridgeNode::~BridgeNode()
+{
+  lidar_udp_run_.store(false);
+  if (lidar_udp_sock_ >= 0) {
+    ::shutdown(lidar_udp_sock_, SHUT_RDWR);
+    ::close(lidar_udp_sock_);
+    lidar_udp_sock_ = -1;
+  }
+  if (lidar_udp_thread_.joinable()) {
+    lidar_udp_thread_.join();
+  }
 }
 
 void BridgeNode::on_cmd_vel(const geometry_msgs::msg::Twist & msg)
@@ -261,9 +328,42 @@ void BridgeNode::on_set_telemetry(
   telemetry_.enable_tof = req->enable_tof;
   telemetry_.tof_rate_hz = req->tof_rate_hz;
 
+  telemetry_.enable_lidar = req->enable_lidar;
+  telemetry_.lidar_rate_hz = req->lidar_rate_hz;
+  telemetry_.lidar_udp_port = req->lidar_udp_port;
+  if (telemetry_.lidar_udp_port == 0) {
+    telemetry_.lidar_udp_port = 5601;
+  }
+  lidar_udp_port_ = telemetry_.lidar_udp_port;
+
   telemetry_.profile_name = req->profile_name;
 
   // 2) Build binary config payload and send to robot (TCP)
+  bool sent_ok = send_telemetry_config_();
+
+  // 3) Update params to reflect current config (best-effort)
+  std::vector<rclcpp::Parameter> ps;
+  ps.emplace_back("enable_imu", telemetry_.enable_imu);
+  ps.emplace_back("imu_rate_hz", telemetry_.imu_rate_hz);
+  ps.emplace_back("enable_ir", telemetry_.enable_ir);
+  ps.emplace_back("ir_rate_hz", telemetry_.ir_rate_hz);
+  ps.emplace_back("enable_tof", telemetry_.enable_tof);
+  ps.emplace_back("tof_rate_hz", telemetry_.tof_rate_hz);
+  ps.emplace_back("enable_lidar", telemetry_.enable_lidar);
+  ps.emplace_back("lidar_rate_hz", telemetry_.lidar_rate_hz);
+  ps.emplace_back("lidar_udp_port", static_cast<int>(telemetry_.lidar_udp_port));
+  telemetry_param_update_ = true;
+  (void)this->set_parameters(ps);
+  telemetry_param_update_ = false;
+
+  // 4) Respond to ROS service caller
+  resp->accepted = true;
+  resp->status = sent_ok ? "applied (binary config sent)" : "applied (not connected; config not sent)";
+}
+
+bool BridgeNode::send_telemetry_config_()
+{
+  // Build binary config payload and send to robot (TCP)
   struct __attribute__((packed)) Cfg {
     uint8_t enable_imu;
     float   imu_rate_hz;
@@ -275,6 +375,9 @@ void BridgeNode::on_set_telemetry(
     float   batt_rate_hz;
     uint8_t enable_tof;
     float   tof_rate_hz;
+    uint8_t enable_lidar;
+    float   lidar_rate_hz;
+    uint16_t lidar_udp_port;
   } cfg;
 
   cfg.enable_imu    = telemetry_.enable_imu ? 1 : 0;
@@ -287,6 +390,9 @@ void BridgeNode::on_set_telemetry(
   cfg.batt_rate_hz  = telemetry_.battery_rate_hz;
   cfg.enable_tof    = telemetry_.enable_tof ? 1 : 0;
   cfg.tof_rate_hz   = telemetry_.tof_rate_hz;
+  cfg.enable_lidar  = telemetry_.enable_lidar ? 1 : 0;
+  cfg.lidar_rate_hz = telemetry_.lidar_rate_hz;
+  cfg.lidar_udp_port = telemetry_.lidar_udp_port;
 
   uint32_t s = seq_.fetch_add(1);
 
@@ -307,9 +413,137 @@ void BridgeNode::on_set_telemetry(
     stats_.tx_dropped.fetch_add(1);
   }
 
-  // 3) Respond to ROS service caller
-  resp->accepted = true;
-  resp->status = sent_ok ? "applied (binary config sent)" : "applied (not connected; config not sent)";
+  return sent_ok;
+}
+
+void BridgeNode::start_or_stop_lidar_udp_()
+{
+  if (lidar_transport_ != "udp" || lidar_udp_port_ <= 0) {
+    lidar_udp_run_.store(false);
+    if (lidar_udp_sock_ >= 0) {
+      ::shutdown(lidar_udp_sock_, SHUT_RDWR);
+      ::close(lidar_udp_sock_);
+      lidar_udp_sock_ = -1;
+    }
+    lidar_udp_port_bound_ = 0;
+    if (lidar_udp_thread_.joinable()) {
+      lidar_udp_thread_.join();
+    }
+    return;
+  }
+
+  if (lidar_udp_run_.load() && lidar_udp_port_bound_ == lidar_udp_port_) {
+    return;
+  }
+  if (lidar_udp_run_.load()) {
+    lidar_udp_run_.store(false);
+    if (lidar_udp_sock_ >= 0) {
+      ::shutdown(lidar_udp_sock_, SHUT_RDWR);
+      ::close(lidar_udp_sock_);
+      lidar_udp_sock_ = -1;
+    }
+    if (lidar_udp_thread_.joinable()) {
+      lidar_udp_thread_.join();
+    }
+  }
+
+  int sock = ::socket(AF_INET, SOCK_DGRAM, 0);
+  if (sock < 0) {
+    RCLCPP_WARN(this->get_logger(), "failed to create lidar UDP socket");
+    return;
+  }
+
+  sockaddr_in addr;
+  std::memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(static_cast<uint16_t>(lidar_udp_port_));
+  addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+  if (::bind(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+    RCLCPP_WARN(this->get_logger(), "failed to bind lidar UDP port %d", lidar_udp_port_);
+    ::close(sock);
+    return;
+  }
+
+  RCLCPP_INFO(this->get_logger(), "lidar UDP listening on 0.0.0.0:%d", lidar_udp_port_);
+
+  lidar_udp_sock_ = sock;
+  lidar_udp_port_bound_ = static_cast<uint16_t>(lidar_udp_port_);
+  lidar_udp_run_.store(true);
+
+  lidar_udp_thread_ = std::thread([this]() {
+    auto rd16 = [](const uint8_t* p) -> uint16_t {
+      return static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8);
+    };
+
+    constexpr uint16_t kMagic = 0x4C44; // 'LD'
+    constexpr float kTwoPi = 6.28318530718f;
+
+    std::vector<uint8_t> buf;
+    buf.resize(2048);
+    uint32_t pkt_ok = 0;
+    uint32_t pkt_any = 0;
+    uint32_t pkt_bad = 0;
+    auto last_log = std::chrono::steady_clock::now();
+
+    while (lidar_udp_run_.load()) {
+      sockaddr_in src;
+      socklen_t slen = sizeof(src);
+      ssize_t n = ::recvfrom(lidar_udp_sock_, buf.data(), buf.size(), 0,
+                             reinterpret_cast<sockaddr*>(&src), &slen);
+      if (n <= 0) {
+        continue;
+      }
+      pkt_any++;
+      if (n < 10) {
+        pkt_bad++;
+        continue;
+      }
+
+      uint16_t magic = rd16(buf.data());
+      if (magic != kMagic) {
+        pkt_bad++;
+        continue;
+      }
+      uint16_t count = rd16(buf.data() + 4);
+      uint16_t range_min_mm = rd16(buf.data() + 6);
+      uint16_t range_max_mm = rd16(buf.data() + 8);
+
+      size_t expected = 10 + static_cast<size_t>(count) * 2;
+      if (static_cast<size_t>(n) < expected || count == 0) {
+        pkt_bad++;
+        continue;
+      }
+
+      sensor_msgs::msg::LaserScan msg;
+      msg.header.stamp = this->now();
+      msg.header.frame_id = "lidar_link";
+
+      float angle_min = 0.0f;
+      float angle_increment = kTwoPi / static_cast<float>(count);
+      msg.angle_min = angle_min;
+      msg.angle_increment = angle_increment;
+      msg.angle_max = angle_min + angle_increment * static_cast<float>(count - 1);
+
+      msg.range_min = static_cast<float>(range_min_mm) / 1000.0f;
+      msg.range_max = static_cast<float>(range_max_mm) / 1000.0f;
+
+      msg.ranges.resize(count);
+      for (size_t i = 0; i < count; ++i) {
+        uint16_t mm = rd16(buf.data() + 10 + i * 2);
+        if (mm == 0) {
+          msg.ranges[i] = std::numeric_limits<float>::quiet_NaN();
+        } else {
+          msg.ranges[i] = static_cast<float>(mm) / 1000.0f;
+        }
+      }
+
+      pub_lidar_->publish(msg);
+      pkt_ok++;
+
+      last_log = std::chrono::steady_clock::now();
+    }
+  });
 }
 
 

@@ -3,11 +3,14 @@
 #include <memory>
 #include <string>
 #include <atomic>
+#include <thread>
+#include <cstdint>
 
 #include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/twist.hpp"
 #include "sensor_msgs/msg/imu.hpp"
 #include "sensor_msgs/msg/range.hpp"
+#include "sensor_msgs/msg/laser_scan.hpp"
 #include "tb_interfaces/msg/ir_state.hpp"
 
 #include "tb_interfaces/srv/set_telemetry.hpp"
@@ -41,6 +44,10 @@ struct TelemetryConfig
   bool enable_tof{false};
   float tof_rate_hz{0.0f};
 
+  bool enable_lidar{false};
+  float lidar_rate_hz{0.0f};
+  uint16_t lidar_udp_port{5601};
+
   std::string profile_name;
 };
 
@@ -65,6 +72,7 @@ class BridgeNode : public rclcpp::Node
 {
 public:
   explicit BridgeNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
+  ~BridgeNode();
 
 private:
   // ROS callbacks
@@ -118,9 +126,20 @@ private:
   void update_rtt_stats_locked_();  // expects bench_mtx_ locked
 
   void send_set_id_();
+  bool send_telemetry_config_();
+  void start_or_stop_lidar_udp_();
 
   rclcpp::TimerBase::SharedPtr set_id_timer_;
   bool set_id_sent_{false};
+  bool telemetry_param_update_{false};
+
+  // LiDAR UDP receiver
+  std::thread lidar_udp_thread_;
+  std::atomic<bool> lidar_udp_run_{false};
+  int lidar_udp_sock_{-1};
+  int lidar_udp_port_{5601};
+  uint16_t lidar_udp_port_bound_{0};
+  std::string lidar_transport_{"udp"};
 
   // ROS entities
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr sub_cmd_vel_;
@@ -130,6 +149,7 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr pub_imu_;
   rclcpp::Publisher<tb_interfaces::msg::IRState>::SharedPtr pub_ir_;
   rclcpp::Publisher<sensor_msgs::msg::Range>::SharedPtr pub_tof_;
+  rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr pub_lidar_;
 };
 
 }  // namespace tb_bridge_cpp

@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <errno.h>
 #include <sys/time.h>
+#include <math.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -21,6 +22,7 @@
 #include "tb_imu.h"
 #include "tb_ir.h"
 #include "tb_tof.h"
+#include "tb_lidar.h"
 static const char *TAG = "tb_tcp";
 
 #define TB_MAGIC0 0x54  // 'T'
@@ -115,11 +117,19 @@ typedef struct __attribute__((packed)) {
   float   batt_rate_hz;
   uint8_t enable_tof;
   float   tof_rate_hz;
+  uint8_t enable_lidar;
+  float   lidar_rate_hz;
+  uint16_t lidar_udp_port;
 } tb_cfg_t;
 
 #define TB_MIN_IMU_HZ 50.0f
 #define TB_MIN_IR_HZ  10.0f
 #define TB_MIN_TOF_HZ 10.0f
+#define TB_MIN_LIDAR_HZ 1.0f
+#define TB_LIDAR_SWEEP_HZ 10.0f
+#define TB_LIDAR_RANGE_MIN_MM 50
+#define TB_LIDAR_RANGE_MAX_MM 12000
+#define TB_LIDAR_MAGIC 0x4C44
 
 static tb_cfg_t g_cfg = {
   .enable_imu = 1,
@@ -132,10 +142,59 @@ static tb_cfg_t g_cfg = {
   .batt_rate_hz = 0.0f,
   .enable_tof = 1,
   .tof_rate_hz = TB_MIN_TOF_HZ,
+  .enable_lidar = 0,
+  .lidar_rate_hz = TB_MIN_LIDAR_HZ,
+  .lidar_udp_port = 5601,
 };
 static TickType_t g_last_imu = 0;
 static TickType_t g_last_ir = 0;
 static TickType_t g_last_tof = 0;
+static uint32_t g_lidar_sweep_counter = 0;
+
+static int lidar_udp_sock = -1;
+static struct sockaddr_in lidar_peer;
+static bool lidar_peer_valid = false;
+
+typedef struct __attribute__((packed)) {
+  uint16_t magic;
+  uint16_t seq;
+  uint16_t count;
+  uint16_t range_min_mm;
+  uint16_t range_max_mm;
+} tb_lidar_udp_hdr_t;
+
+static void lidar_peer_set_port(uint16_t port)
+{
+  if (!lidar_peer_valid) return;
+  lidar_peer.sin_port = htons(port);
+}
+
+static bool lidar_udp_send_sweep(uint16_t seq, const uint16_t *ranges_mm, size_t count)
+{
+  if (!ranges_mm || count == 0) return false;
+  if (!lidar_peer_valid || lidar_udp_sock < 0) return true;
+
+  uint8_t buf[10 + TB_LIDAR_POINTS * 2];
+  size_t expected = 10 + count * 2;
+  if (expected > sizeof(buf)) return false;
+
+  tb_lidar_udp_hdr_t hdr;
+  hdr.magic = TB_LIDAR_MAGIC;
+  hdr.seq = seq;
+  hdr.count = (uint16_t)count;
+  hdr.range_min_mm = TB_LIDAR_RANGE_MIN_MM;
+  hdr.range_max_mm = TB_LIDAR_RANGE_MAX_MM;
+
+  memcpy(buf, &hdr, sizeof(hdr));
+  for (size_t i = 0; i < count; ++i) {
+    uint16_t v = ranges_mm[i];
+    buf[10 + i * 2] = (uint8_t)(v & 0xFF);
+    buf[10 + i * 2 + 1] = (uint8_t)(v >> 8);
+  }
+
+  int r = sendto(lidar_udp_sock, buf, expected, 0, (struct sockaddr*)&lidar_peer, sizeof(lidar_peer));
+  return r == (int)expected;
+}
 
 static void handle_frame(int sock, uint8_t type, uint32_t seq, const uint8_t *payload, uint16_t len)
 {
@@ -186,15 +245,20 @@ static void handle_frame(int sock, uint8_t type, uint32_t seq, const uint8_t *pa
     if (g_cfg.enable_imu) g_cfg.imu_rate_hz = clamp_rate(g_cfg.imu_rate_hz, TB_MIN_IMU_HZ);
     if (g_cfg.enable_ir) g_cfg.ir_rate_hz = clamp_rate(g_cfg.ir_rate_hz, TB_MIN_IR_HZ);
     if (g_cfg.enable_tof) g_cfg.tof_rate_hz = clamp_rate(g_cfg.tof_rate_hz, TB_MIN_TOF_HZ);
+    if (g_cfg.enable_lidar) g_cfg.lidar_rate_hz = clamp_rate(g_cfg.lidar_rate_hz, TB_MIN_LIDAR_HZ);
+    if (g_cfg.lidar_udp_port == 0) g_cfg.lidar_udp_port = 5601;
+    lidar_peer_set_port(g_cfg.lidar_udp_port);
 
     ESP_LOGI(TAG,
-      "CFG seq=%lu imu=%u@%.1f ir=%u@%.1f motor=%u@%.1f batt=%u@%.1f tof=%u@%.1f",
+      "CFG seq=%lu imu=%u@%.1f ir=%u@%.1f motor=%u@%.1f batt=%u@%.1f tof=%u@%.1f lidar=%u@%.1f udp=%u",
       (unsigned long)seq,
       (unsigned)g_cfg.enable_imu, (double)g_cfg.imu_rate_hz,
       (unsigned)g_cfg.enable_ir, (double)g_cfg.ir_rate_hz,
       (unsigned)g_cfg.enable_motor, (double)g_cfg.motor_rate_hz,
       (unsigned)g_cfg.enable_batt, (double)g_cfg.batt_rate_hz,
-      (unsigned)g_cfg.enable_tof, (double)g_cfg.tof_rate_hz
+      (unsigned)g_cfg.enable_tof, (double)g_cfg.tof_rate_hz,
+      (unsigned)g_cfg.enable_lidar, (double)g_cfg.lidar_rate_hz,
+      (unsigned)g_cfg.lidar_udp_port
     );
     return;
   }
@@ -246,6 +310,21 @@ static bool telemetry_tick(int sock, uint32_t *seq)
     }
   }
 
+  if (g_cfg.enable_lidar && g_cfg.lidar_rate_hz > 0.0f) {
+    uint16_t ranges[TB_LIDAR_POINTS];
+    uint32_t sweep_seq = 0;
+    if (tb_lidar_pop_sweep(ranges, TB_LIDAR_POINTS, &sweep_seq)) {
+      g_lidar_sweep_counter++;
+      float hz = g_cfg.lidar_rate_hz;
+      if (hz > TB_LIDAR_SWEEP_HZ) hz = TB_LIDAR_SWEEP_HZ;
+      int send_every = (hz <= 0.0f) ? 0 : (int)lroundf(TB_LIDAR_SWEEP_HZ / hz);
+      if (send_every < 1) send_every = 1;
+      if ((g_lidar_sweep_counter % (uint32_t)send_every) == 0) {
+        if (!lidar_udp_send_sweep((uint16_t)sweep_seq, ranges, TB_LIDAR_POINTS)) return false;
+      }
+    }
+  }
+
   return true;
 }
 
@@ -291,7 +370,7 @@ void tcp_server_task(void *arg)
   size_t stream_len = 0;
 
   while (1) {
-    struct sockaddr_in6 client_addr;
+    struct sockaddr_storage client_addr;
     socklen_t client_len = sizeof(client_addr);
     int sock = accept(listen_fd, (struct sockaddr*)&client_addr, &client_len);
     if (sock < 0) {
@@ -306,6 +385,18 @@ void tcp_server_task(void *arg)
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     ESP_LOGI(TAG, "client connected");
+    if (client_addr.ss_family == AF_INET) {
+      struct sockaddr_in *in = (struct sockaddr_in*)&client_addr;
+      lidar_peer = *in;
+      lidar_peer.sin_port = htons(g_cfg.lidar_udp_port);
+      lidar_peer_valid = true;
+      if (lidar_udp_sock < 0) {
+        lidar_udp_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
+      }
+    } else {
+      lidar_peer_valid = false;
+    }
+
     stream_len = 0;
     uint32_t tx_seq = 1;
 
@@ -384,5 +475,10 @@ void tcp_server_task(void *arg)
 
     shutdown(sock, SHUT_RDWR);
     close(sock);
+    if (lidar_udp_sock >= 0) {
+      close(lidar_udp_sock);
+      lidar_udp_sock = -1;
+    }
+    lidar_peer_valid = false;
   }
 }

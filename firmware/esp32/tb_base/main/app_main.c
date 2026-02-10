@@ -9,6 +9,7 @@
 #include "tb_imu.h"
 #include "tb_ir.h"
 #include "tb_tof.h"
+#include "tb_lidar.h"
 
 // forward declare your TCP server task from your file
 void tcp_server_task(void *arg);
@@ -46,6 +47,10 @@ void app_main(void)
   if (tb_tof_init(tb_i2c_get_bus()) != ESP_OK) {
     ESP_LOGW(TAG, "ToF init failed");
   }
+  if (tb_lidar_init() != ESP_OK) {
+    ESP_LOGW(TAG, "LiDAR init failed");
+  }
+
 
   xTaskCreatePinnedToCore(tcp_server_task, "tb_tcp_server", 8192, NULL, 5, NULL, 1);
 }

@@ -9,6 +9,7 @@ idf_component_register(
     "tb_imu.c"
     "tb_ir.c"
     "tb_tof.c"
+    "tb_lidar.c"
     "vl53l0x.c"
   INCLUDE_DIRS
     "."

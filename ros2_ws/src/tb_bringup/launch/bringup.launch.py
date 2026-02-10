@@ -15,6 +15,10 @@ def generate_launch_description():
     transport_mode = LaunchConfiguration('transport_mode')
     cmd_timeout_ms = LaunchConfiguration('cmd_timeout_ms')
     send_rate_hz = LaunchConfiguration('send_rate_hz')
+    lidar_transport = LaunchConfiguration('lidar_transport')
+    lidar_udp_port = LaunchConfiguration('lidar_udp_port')
+    enable_lidar = LaunchConfiguration('enable_lidar')
+    lidar_rate_hz = LaunchConfiguration('lidar_rate_hz')
 
     # optional: print/debug flags
     log_level = LaunchConfiguration('log_level')
@@ -44,6 +48,10 @@ def generate_launch_description():
             'transport_mode': transport_mode,
             'cmd_timeout_ms': cmd_timeout_ms,
             'send_rate_hz': send_rate_hz,
+            'lidar_transport': lidar_transport,
+            'lidar_udp_port': lidar_udp_port,
+            'enable_lidar': enable_lidar,
+            'lidar_rate_hz': lidar_rate_hz,
         }],
         condition=use_ws_url
     )
@@ -64,6 +72,10 @@ def generate_launch_description():
             'transport_mode': transport_mode,
             'cmd_timeout_ms': cmd_timeout_ms,
             'send_rate_hz': send_rate_hz,
+            'lidar_transport': lidar_transport,
+            'lidar_udp_port': lidar_udp_port,
+            'enable_lidar': enable_lidar,
+            'lidar_rate_hz': lidar_rate_hz,
         }],
         condition=use_built
     )
@@ -78,6 +90,11 @@ def generate_launch_description():
         DeclareLaunchArgument('transport_mode', default_value='ws_jsonl'),
         DeclareLaunchArgument('cmd_timeout_ms', default_value='500'),
         DeclareLaunchArgument('send_rate_hz', default_value='20.0'),
+
+        DeclareLaunchArgument('lidar_transport', default_value='udp'),
+        DeclareLaunchArgument('lidar_udp_port', default_value='5601'),
+        DeclareLaunchArgument('enable_lidar', default_value='false'),
+        DeclareLaunchArgument('lidar_rate_hz', default_value='1.0'),
 
         DeclareLaunchArgument('log_level', default_value='info'),
 
