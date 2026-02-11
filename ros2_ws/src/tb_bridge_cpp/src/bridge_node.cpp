@@ -9,6 +9,8 @@
 #include <cstring>
 #include <cmath>
 #include <limits>
+#include <fstream>
+#include <cstdlib>
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -34,6 +36,9 @@ BridgeNode::BridgeNode(const rclcpp::NodeOptions & options)
   transport_mode_ = this->declare_parameter<std::string>("transport_mode", "ws_jsonl");
   cmd_timeout_ms_ = this->declare_parameter<int>("cmd_timeout_ms", 500);
   send_rate_hz_   = this->declare_parameter<double>("send_rate_hz", 20.0);
+  metrics_enable_ = this->declare_parameter<bool>("metrics_enable", false);
+  metrics_time_sync_hz_ = this->declare_parameter<double>("metrics_time_sync_hz", 2.0);
+  metrics_log_path_ = this->declare_parameter<std::string>("metrics_log_path", "");
 
   telemetry_.enable_imu = this->declare_parameter<bool>("enable_imu", false);
   telemetry_.imu_rate_hz = this->declare_parameter<double>("imu_rate_hz", 50.0);
@@ -59,6 +64,27 @@ BridgeNode::BridgeNode(const rclcpp::NodeOptions & options)
   // Update stats visible via service
   stats_.transport_mode = transport_mode_;
   stats_.status = "starting";
+
+  metrics_t0_ = std::chrono::steady_clock::now();
+  if (metrics_enable_) {
+    std::string path = metrics_log_path_;
+    if (path.empty()) {
+      const char *home = std::getenv("HOME");
+      if (home && *home) {
+        path = std::string(home) + "/.ros/tb_metrics_" + robot_id_ + ".csv";
+      } else {
+        path = "tb_metrics_" + robot_id_ + ".csv";
+      }
+    }
+    metrics_log_.open(path, std::ios::out | std::ios::trunc);
+    if (metrics_log_) {
+      metrics_log_ << "host_us,type,seq,latency_us,rtt_us,offset_us\n";
+      metrics_log_.flush();
+      RCLCPP_INFO(this->get_logger(), "metrics log: %s", path.c_str());
+    } else {
+      RCLCPP_WARN(this->get_logger(), "metrics log open failed: %s", path.c_str());
+    }
+  }
 
   // ---- Topics in namespace ----
   // Using relative topic names lets ROS namespace remapping handle /tb_01 automatically.
@@ -99,6 +125,87 @@ BridgeNode::BridgeNode(const rclcpp::NodeOptions & options)
     tcp_->start(robot_ip_, port_, [this](const Frame& f) {
       if (f.type == MsgType::ACK) {
         handle_ack_(f.seq);
+        return;
+      }
+      if (f.type == MsgType::TIME_SYNC) {
+        if (f.payload.size() != sizeof(uint64_t)) {
+          stats_.rx_dropped.fetch_add(1);
+          return;
+        }
+        uint64_t esp_us = 0;
+        std::memcpy(&esp_us, f.payload.data(), sizeof(esp_us));
+        auto t1 = std::chrono::steady_clock::now();
+        std::chrono::steady_clock::time_point t0;
+        bool found = false;
+        {
+          std::lock_guard<std::mutex> lk(metrics_mtx_);
+          auto it = time_sync_pending_.find(f.seq);
+          if (it != time_sync_pending_.end()) {
+            t0 = it->second;
+            time_sync_pending_.erase(it);
+            found = true;
+          }
+        }
+        if (!found) return;
+
+        int64_t t0_us = std::chrono::duration_cast<std::chrono::microseconds>(t0 - metrics_t0_).count();
+        int64_t t1_us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - metrics_t0_).count();
+        int64_t rtt_us = t1_us - t0_us;
+        double new_offset = (static_cast<double>(t0_us + t1_us) * 0.5) - static_cast<double>(esp_us);
+
+        {
+          std::lock_guard<std::mutex> lk(metrics_mtx_);
+          if (!time_offset_valid_) {
+            time_offset_us_ = new_offset;
+            time_offset_valid_ = true;
+          } else {
+            time_offset_us_ = 0.9 * time_offset_us_ + 0.1 * new_offset;
+          }
+        }
+
+        if (metrics_enable_) {
+          std::ostringstream ss;
+          ss << t1_us << ",time_sync," << f.seq << ",0," << rtt_us << "," << static_cast<int64_t>(time_offset_us_);
+          log_metric_(ss.str());
+        }
+        return;
+      }
+      if (f.type == MsgType::CMD_VEL_ACK) {
+        if (f.payload.size() != sizeof(uint64_t)) {
+          stats_.rx_dropped.fetch_add(1);
+          return;
+        }
+        uint64_t esp_us = 0;
+        std::memcpy(&esp_us, f.payload.data(), sizeof(esp_us));
+        auto t_recv = std::chrono::steady_clock::now();
+        std::chrono::steady_clock::time_point t_send;
+        bool found = false;
+        {
+          std::lock_guard<std::mutex> lk(metrics_mtx_);
+          auto it = cmd_pending_.find(f.seq);
+          if (it != cmd_pending_.end()) {
+            t_send = it->second;
+            cmd_pending_.erase(it);
+            found = true;
+          }
+        }
+        if (!found) return;
+        int64_t t_send_us = std::chrono::duration_cast<std::chrono::microseconds>(t_send - metrics_t0_).count();
+        int64_t t_recv_us = std::chrono::duration_cast<std::chrono::microseconds>(t_recv - metrics_t0_).count();
+        int64_t rtt_us = t_recv_us - t_send_us;
+        double offset_us = 0.0;
+        bool offset_ok = false;
+        {
+          std::lock_guard<std::mutex> lk(metrics_mtx_);
+          offset_us = time_offset_us_;
+          offset_ok = time_offset_valid_;
+        }
+        int64_t latency_us = offset_ok ? static_cast<int64_t>((static_cast<double>(esp_us) + offset_us) - t_send_us) : -1;
+        if (metrics_enable_) {
+          std::ostringstream ss;
+          ss << t_recv_us << ",cmd_ack," << f.seq << "," << latency_us << "," << rtt_us << "," << static_cast<int64_t>(offset_us);
+          log_metric_(ss.str());
+        }
         return;
       }
 
@@ -164,6 +271,32 @@ BridgeNode::BridgeNode(const rclcpp::NodeOptions & options)
         msg.range = range_m;
 
         pub_tof_->publish(msg);
+        return;
+      }
+
+      if (f.type == MsgType::IMU_TS || f.type == MsgType::IR_TS || f.type == MsgType::TOF_TS) {
+        if (!metrics_enable_) return;
+        uint64_t esp_us = 0;
+        size_t needed = sizeof(uint64_t);
+        if (f.payload.size() < needed) {
+          stats_.rx_dropped.fetch_add(1);
+          return;
+        }
+        std::memcpy(&esp_us, f.payload.data(), sizeof(esp_us));
+        int64_t t_recv_us = now_us_();
+        double offset_us = 0.0;
+        bool offset_ok = false;
+        {
+          std::lock_guard<std::mutex> lk(metrics_mtx_);
+          offset_us = time_offset_us_;
+          offset_ok = time_offset_valid_;
+        }
+        int64_t latency_us = offset_ok ? static_cast<int64_t>((static_cast<double>(esp_us) + offset_us) - t_recv_us) * -1 : -1;
+        const char *type = (f.type == MsgType::IMU_TS) ? "imu_ts" :
+                           (f.type == MsgType::IR_TS) ? "ir_ts" : "tof_ts";
+        std::ostringstream ss;
+        ss << t_recv_us << "," << type << "," << f.seq << "," << latency_us << ",0," << static_cast<int64_t>(offset_us);
+        log_metric_(ss.str());
         return;
       }
     });
@@ -236,6 +369,7 @@ BridgeNode::BridgeNode(const rclcpp::NodeOptions & options)
 
   start_or_stop_benchmark_timer_();
   start_or_stop_lidar_udp_();
+  start_or_stop_metrics_timer_();
 
   if (transport_mode_ == "tcp_bin") {
     set_id_timer_ = this->create_wall_timer(
@@ -288,6 +422,14 @@ void BridgeNode::on_cmd_vel(const geometry_msgs::msg::Twist & msg)
   };
 
   uint32_t s = seq_.fetch_add(1);
+
+  if (metrics_enable_) {
+    std::lock_guard<std::mutex> lk(metrics_mtx_);
+    cmd_pending_[s] = std::chrono::steady_clock::now();
+    if (cmd_pending_.size() > 2000) {
+      cmd_pending_.erase(cmd_pending_.begin());
+    }
+  }
 
   auto bytes = encode_frame(
     MsgType::CMD_VEL,
@@ -484,7 +626,6 @@ void BridgeNode::start_or_stop_lidar_udp_()
     uint32_t pkt_ok = 0;
     uint32_t pkt_any = 0;
     uint32_t pkt_bad = 0;
-    auto last_log = std::chrono::steady_clock::now();
 
     while (lidar_udp_run_.load()) {
       sockaddr_in src;
@@ -541,7 +682,6 @@ void BridgeNode::start_or_stop_lidar_udp_()
       pub_lidar_->publish(msg);
       pkt_ok++;
 
-      last_log = std::chrono::steady_clock::now();
     }
   });
 }
@@ -696,6 +836,74 @@ void BridgeNode::update_rtt_stats_locked_()
   stats_.rtt_ms_p50.store(pct(0.50));
   stats_.rtt_ms_p95.store(pct(0.95));
   stats_.rtt_ms_p99.store(pct(0.99));
+}
+
+void BridgeNode::start_or_stop_metrics_timer_()
+{
+  metrics_timer_.reset();
+  if (transport_mode_ != "tcp_bin" || !metrics_enable_) return;
+  if (metrics_time_sync_hz_ <= 0.0) metrics_time_sync_hz_ = 1.0;
+
+  auto period = std::chrono::duration<double>(1.0 / metrics_time_sync_hz_);
+  metrics_timer_ = this->create_wall_timer(
+    std::chrono::duration_cast<std::chrono::nanoseconds>(period),
+    [this]() {
+      if (!(tcp_ && tcp_->is_connected())) {
+        metrics_cfg_sent_ = false;
+        return;
+      }
+      send_metrics_cfg_();
+      send_time_sync_();
+    }
+  );
+}
+
+void BridgeNode::send_metrics_cfg_()
+{
+  if (!metrics_enable_) return;
+  uint8_t enable = 1;
+  uint32_t s = seq_.fetch_add(1);
+  auto bytes = encode_frame(MsgType::METRICS_CFG, 0, s, &enable, sizeof(enable));
+  if (tcp_ && tcp_->is_connected()) {
+    if (!tcp_->send_bytes(bytes.data(), bytes.size())) {
+      stats_.tx_dropped.fetch_add(1);
+    } else {
+      metrics_cfg_sent_ = true;
+    }
+  }
+}
+
+void BridgeNode::send_time_sync_()
+{
+  if (!metrics_enable_) return;
+  if (!(tcp_ && tcp_->is_connected())) return;
+  uint32_t s = seq_.fetch_add(1);
+  auto t0 = std::chrono::steady_clock::now();
+  {
+    std::lock_guard<std::mutex> lk(metrics_mtx_);
+    time_sync_pending_[s] = t0;
+    if (time_sync_pending_.size() > 2000) {
+      time_sync_pending_.erase(time_sync_pending_.begin());
+    }
+  }
+  auto bytes = encode_frame(MsgType::TIME_SYNC, 0, s, nullptr, 0);
+  if (!tcp_->send_bytes(bytes.data(), bytes.size())) {
+    stats_.tx_dropped.fetch_add(1);
+  }
+}
+
+int64_t BridgeNode::now_us_() const
+{
+  return std::chrono::duration_cast<std::chrono::microseconds>(
+    std::chrono::steady_clock::now() - metrics_t0_).count();
+}
+
+void BridgeNode::log_metric_(const std::string& line)
+{
+  if (!metrics_log_) return;
+  std::lock_guard<std::mutex> lk(metrics_mtx_);
+  metrics_log_ << line << "\n";
+  metrics_log_.flush();
 }
 
 }  // namespace tb_bridge_cpp

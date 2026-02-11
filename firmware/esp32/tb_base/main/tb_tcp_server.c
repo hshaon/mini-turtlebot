@@ -10,6 +10,7 @@
 #include "freertos/task.h"
 
 #include "esp_log.h"
+#include "esp_timer.h"
 
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
@@ -41,10 +42,17 @@ typedef enum {
   //For Heartbeat
   TB_MSG_HEARTBEAT = 0x10,
   TB_MSG_ACK       = 0x11,
+  TB_MSG_TIME_SYNC = 0x12,
+  TB_MSG_METRICS_CFG = 0x13,
+  TB_MSG_CMD_VEL_ACK = 0x14,
 
   TB_MSG_IMU        = 0x30,
   TB_MSG_IR         = 0x31,
   TB_MSG_TOF        = 0x32,
+
+  TB_MSG_IMU_TS     = 0x40,
+  TB_MSG_IR_TS      = 0x41,
+  TB_MSG_TOF_TS     = 0x42,
 } tb_msg_type_t;
 
 static int send_all(int sock, const uint8_t *data, size_t n) {
@@ -150,6 +158,26 @@ static TickType_t g_last_imu = 0;
 static TickType_t g_last_ir = 0;
 static TickType_t g_last_tof = 0;
 static uint32_t g_lidar_sweep_counter = 0;
+static bool g_metrics_enabled = false;
+
+typedef struct __attribute__((packed)) {
+  uint8_t enable;
+} tb_metrics_cfg_t;
+
+typedef struct __attribute__((packed)) {
+  uint64_t t_us;
+  float v[6];
+} tb_imu_ts_t;
+
+typedef struct __attribute__((packed)) {
+  uint64_t t_us;
+  float v[2];
+} tb_ir_ts_t;
+
+typedef struct __attribute__((packed)) {
+  uint64_t t_us;
+  float range_m;
+} tb_tof_ts_t;
 
 static int lidar_udp_sock = -1;
 static struct sockaddr_in lidar_peer;
@@ -204,6 +232,27 @@ static void handle_frame(int sock, uint8_t type, uint32_t seq, const uint8_t *pa
     return;
   }
 
+  if (type == TB_MSG_TIME_SYNC) {
+    uint64_t t_us = (uint64_t)esp_timer_get_time();
+    (void)send_frame(sock, TB_MSG_TIME_SYNC, 0, seq, (const uint8_t*)&t_us, sizeof(t_us));
+    return;
+  }
+
+  if (type == TB_MSG_METRICS_CFG) {
+    if (len >= sizeof(tb_metrics_cfg_t)) {
+      tb_metrics_cfg_t cfg;
+      memcpy(&cfg, payload, sizeof(cfg));
+      g_metrics_enabled = (cfg.enable != 0);
+      ESP_LOGI(TAG, "METRICS enable=%u", (unsigned)g_metrics_enabled);
+    } else if (len >= 1) {
+      g_metrics_enabled = (payload[0] != 0);
+      ESP_LOGI(TAG, "METRICS enable=%u", (unsigned)g_metrics_enabled);
+    } else {
+      ESP_LOGW(TAG, "METRICS cfg too short");
+    }
+    return;
+  }
+
   if (type == TB_MSG_SET_ID) {
     size_t n = (len < (sizeof(s_robot_id) - 1)) ? len : (sizeof(s_robot_id) - 1);
     memcpy(s_robot_id, payload, n);
@@ -231,6 +280,10 @@ static void handle_frame(int sock, uint8_t type, uint32_t seq, const uint8_t *pa
     float speed_r = vx_n + wz_n;
 
     tb_motors_set(speed_l, speed_r);
+    if (g_metrics_enabled) {
+      uint64_t t_us = (uint64_t)esp_timer_get_time();
+      (void)send_frame(sock, TB_MSG_CMD_VEL_ACK, 0, seq, (const uint8_t*)&t_us, sizeof(t_us));
+    }
     return;
   }
 
@@ -279,6 +332,12 @@ static bool telemetry_tick(int sock, uint32_t *seq)
       if (tb_imu_read(&imu) == ESP_OK) {
         float v[6] = {imu.ax, imu.ay, imu.az, imu.gx, imu.gy, imu.gz};
         if (send_frame(sock, TB_MSG_IMU, 0, (*seq)++, (const uint8_t*)v, sizeof(v)) < 0) return false;
+        if (g_metrics_enabled) {
+          tb_imu_ts_t ts;
+          ts.t_us = (uint64_t)esp_timer_get_time();
+          memcpy(ts.v, v, sizeof(v));
+          if (send_frame(sock, TB_MSG_IMU_TS, 0, (*seq)++, (const uint8_t*)&ts, sizeof(ts)) < 0) return false;
+        }
       }
       g_last_imu = now;
     }
@@ -293,6 +352,12 @@ static bool telemetry_tick(int sock, uint32_t *seq)
       if (tb_ir_read(&l, &r) == ESP_OK) {
         float v[2] = {l, r};
         if (send_frame(sock, TB_MSG_IR, 0, (*seq)++, (const uint8_t*)v, sizeof(v)) < 0) return false;
+        if (g_metrics_enabled) {
+          tb_ir_ts_t ts;
+          ts.t_us = (uint64_t)esp_timer_get_time();
+          memcpy(ts.v, v, sizeof(v));
+          if (send_frame(sock, TB_MSG_IR_TS, 0, (*seq)++, (const uint8_t*)&ts, sizeof(ts)) < 0) return false;
+        }
       }
       g_last_ir = now;
     }
@@ -305,6 +370,12 @@ static bool telemetry_tick(int sock, uint32_t *seq)
       float range_m = 0.0f;
       if (tb_tof_read(&range_m) == ESP_OK) {
         if (send_frame(sock, TB_MSG_TOF, 0, (*seq)++, (const uint8_t*)&range_m, sizeof(range_m)) < 0) return false;
+        if (g_metrics_enabled) {
+          tb_tof_ts_t ts;
+          ts.t_us = (uint64_t)esp_timer_get_time();
+          ts.range_m = range_m;
+          if (send_frame(sock, TB_MSG_TOF_TS, 0, (*seq)++, (const uint8_t*)&ts, sizeof(ts)) < 0) return false;
+        }
       }
       g_last_tof = now;
     }

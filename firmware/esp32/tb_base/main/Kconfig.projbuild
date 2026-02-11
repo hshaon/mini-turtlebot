@@ -2,11 +2,11 @@ menu "Mini TurtleBot Base Config"
 
 config TB_WIFI_SSID
     string "WiFi SSID"
-    default "Kim-Elecom-2G"
+    default "Shaon"
 
 config TB_WIFI_PASS
     string "WiFi Password"
-    default "discovery"
+    default "shA12345"
 
 config TB_TCP_PORT
     int "TCP Server Port"

@@ -22,6 +22,7 @@
 #include <mutex>
 #include <chrono>
 #include <vector>
+#include <fstream>
 
 
 namespace tb_bridge_cpp
@@ -100,6 +101,9 @@ private:
   std::string transport_mode_{"ws_jsonl"};
   int cmd_timeout_ms_{500};
   double send_rate_hz_{20.0};
+  bool metrics_enable_{false};
+  double metrics_time_sync_hz_{2.0};
+  std::string metrics_log_path_;
 
   // State
   TelemetryConfig telemetry_;
@@ -120,6 +124,14 @@ private:
 
   std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> pending_;
   std::deque<float> rtt_window_;
+  std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> cmd_pending_;
+  std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> time_sync_pending_;
+  std::mutex metrics_mtx_;
+  std::ofstream metrics_log_;
+  std::chrono::steady_clock::time_point metrics_t0_;
+  double time_offset_us_{0.0};
+  bool time_offset_valid_{false};
+  bool metrics_cfg_sent_{false};
 
   void start_or_stop_benchmark_timer_();
   void handle_ack_(uint32_t seq);
@@ -128,8 +140,14 @@ private:
   void send_set_id_();
   bool send_telemetry_config_();
   void start_or_stop_lidar_udp_();
+  void start_or_stop_metrics_timer_();
+  void send_metrics_cfg_();
+  void send_time_sync_();
+  int64_t now_us_() const;
+  void log_metric_(const std::string& line);
 
   rclcpp::TimerBase::SharedPtr set_id_timer_;
+  rclcpp::TimerBase::SharedPtr metrics_timer_;
   bool set_id_sent_{false};
   bool telemetry_param_update_{false};
 

@@ -19,6 +19,9 @@ def generate_launch_description():
     lidar_udp_port = LaunchConfiguration('lidar_udp_port')
     enable_lidar = LaunchConfiguration('enable_lidar')
     lidar_rate_hz = LaunchConfiguration('lidar_rate_hz')
+    metrics_enable = LaunchConfiguration('metrics_enable')
+    metrics_time_sync_hz = LaunchConfiguration('metrics_time_sync_hz')
+    metrics_log_path = LaunchConfiguration('metrics_log_path')
 
     # optional: print/debug flags
     log_level = LaunchConfiguration('log_level')
@@ -52,6 +55,9 @@ def generate_launch_description():
             'lidar_udp_port': lidar_udp_port,
             'enable_lidar': enable_lidar,
             'lidar_rate_hz': lidar_rate_hz,
+            'metrics_enable': metrics_enable,
+            'metrics_time_sync_hz': metrics_time_sync_hz,
+            'metrics_log_path': metrics_log_path,
         }],
         condition=use_ws_url
     )
@@ -76,6 +82,9 @@ def generate_launch_description():
             'lidar_udp_port': lidar_udp_port,
             'enable_lidar': enable_lidar,
             'lidar_rate_hz': lidar_rate_hz,
+            'metrics_enable': metrics_enable,
+            'metrics_time_sync_hz': metrics_time_sync_hz,
+            'metrics_log_path': metrics_log_path,
         }],
         condition=use_built
     )
@@ -95,6 +104,9 @@ def generate_launch_description():
         DeclareLaunchArgument('lidar_udp_port', default_value='5601'),
         DeclareLaunchArgument('enable_lidar', default_value='false'),
         DeclareLaunchArgument('lidar_rate_hz', default_value='1.0'),
+        DeclareLaunchArgument('metrics_enable', default_value='false'),
+        DeclareLaunchArgument('metrics_time_sync_hz', default_value='2.0'),
+        DeclareLaunchArgument('metrics_log_path', default_value=''),
 
         DeclareLaunchArgument('log_level', default_value='info'),
 
