@@ -130,9 +130,9 @@ typedef struct __attribute__((packed)) {
   uint16_t lidar_udp_port;
 } tb_cfg_t;
 
-#define TB_MIN_IMU_HZ 50.0f
-#define TB_MIN_IR_HZ  10.0f
-#define TB_MIN_TOF_HZ 10.0f
+#define TB_MIN_IMU_HZ 1.0f  // 50
+#define TB_MIN_IR_HZ  1.0f  // 10
+#define TB_MIN_TOF_HZ 1.0f  //10
 #define TB_MIN_LIDAR_HZ 1.0f
 #define TB_LIDAR_SWEEP_HZ 10.0f
 #define TB_LIDAR_RANGE_MIN_MM 50
