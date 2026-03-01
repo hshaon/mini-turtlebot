@@ -12,6 +12,9 @@
 #include "tb_lidar.h"
 #include "esp_system.h"
 
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
+
 // forward declare your TCP server task from your file
 void tcp_server_task(void *arg);
 
@@ -45,6 +48,11 @@ void app_main(void)
   ESP_LOGI(TAG, "boot");
   const esp_reset_reason_t reset_reason = esp_reset_reason();
   ESP_LOGI(TAG, "reset_reason=%d", (int)reset_reason);
+
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+
+  uint32_t reg = READ_PERI_REG(RTC_CNTL_BROWN_OUT_REG);
+  ESP_LOGI("BROWNOUT", "RTC_CNTL_BROWN_OUT_REG = 0x%08lX", reg);
 
   if (tb_wifi_init_and_connect() != ESP_OK) {
     ESP_LOGE(TAG, "wifi connect failed; rebooting in 3s");
