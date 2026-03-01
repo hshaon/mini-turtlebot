@@ -19,6 +19,7 @@ set(msg_files
 set(srv_files
   "srv/SetTelemetry.srv"
   "srv/GetLinkStats.srv"
+  "srv/GetCapabilities.srv"
 )
 
 rosidl_generate_interfaces(${PROJECT_NAME}
