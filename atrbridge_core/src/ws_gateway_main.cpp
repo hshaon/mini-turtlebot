@@ -9,6 +9,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <thread>
 
 #include <boost/asio.hpp>
 #include <boost/beast/core.hpp>
@@ -78,6 +79,7 @@ int main(int argc, char ** argv)
   const int tcp_port = (argc > 2) ? std::atoi(argv[2]) : 9000;
   const int lidar_udp_port = (argc > 3) ? std::atoi(argv[3]) : 5601;
   const int ws_port = (argc > 4) ? std::atoi(argv[4]) : 8080;
+  const std::string robot_id = (argc > 5) ? argv[5] : "tb_01";
 
   std::signal(SIGINT, on_sigint);
   std::signal(SIGTERM, on_sigint);
@@ -118,13 +120,39 @@ int main(int argc, char ** argv)
 
   net::io_context ioc;
   tcp::acceptor acceptor(ioc, {tcp::v4(), static_cast<unsigned short>(ws_port)});
+  beast::error_code ec;
+  acceptor.non_blocking(true, ec);
   std::cout << "atrbridge_ws_gateway listening on ws://0.0.0.0:" << ws_port << "/ws\n";
 
+  std::thread status_thread([&]() {
+    bool prev_connected = false;
+    bool set_id_sent = false;
+    while (g_run.load()) {
+      const auto caps = core.get_capabilities();
+      const bool connected = caps.runtime.tcp_connected;
+      if (connected != prev_connected) {
+        std::cout << "[core] tcp_connected=" << (connected ? "true" : "false") << std::endl;
+        prev_connected = connected;
+      }
+      if (!connected) {
+        set_id_sent = false;
+      } else if (!set_id_sent) {
+        if (core.send_set_id(robot_id)) {
+          set_id_sent = true;
+          std::cout << "[core] SET_ID sent: " << robot_id << std::endl;
+        }
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
+  });
+
   while (g_run.load()) {
-    beast::error_code ec;
     tcp::socket socket(ioc);
     acceptor.accept(socket, ec);
     if (ec) {
+      if (ec == net::error::would_block || ec == net::error::try_again) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      }
       continue;
     }
 
@@ -196,7 +224,9 @@ int main(int argc, char ** argv)
     }
   }
 
+  if (status_thread.joinable()) {
+    status_thread.join();
+  }
   core.stop();
   return 0;
 }
-
