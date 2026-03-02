@@ -227,6 +227,9 @@ int main(int argc, char ** argv)
   if (status_thread.joinable()) {
     status_thread.join();
   }
+  // Clear robot ID on intentional gateway shutdown so OLED returns to "ID: ---".
+  (void)core.send_set_id("---");
+  std::this_thread::sleep_for(std::chrono::milliseconds(120));
   core.stop();
   return 0;
 }
