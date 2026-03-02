@@ -26,7 +26,7 @@ cmake --build build -j
 
 ### 1.2 Install Python deps (no ROS needed)
 ```bash
-cd /home/shaon/mini-turtlebot/ros2_ws/ai_pipeline
+cd /home/shaon/mini-turtlebot/ai_pipeline
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -U pip setuptools
@@ -43,7 +43,7 @@ export GEMINI_API_KEY="YOUR_GEMINI_API_KEY"
 ## 2) Start ROS-free Stack
 
 ```bash
-cd /home/shaon/mini-turtlebot/ros2_ws/ai_pipeline
+cd /home/shaon/mini-turtlebot/ai_pipeline
 ./start_rosfree_stack.sh --robot-ip 192.168.0.78 --robot-id tb_01
 ```
 
@@ -61,7 +61,7 @@ Stop stack:
 ## 3) Interactive AI Control
 
 ```bash
-cd /home/shaon/mini-turtlebot/ros2_ws/ai_pipeline
+cd /home/shaon/mini-turtlebot/ai_pipeline
 source .venv/bin/activate
 export GEMINI_API_KEY="YOUR_GEMINI_API_KEY"
 ./ai_control_cli.sh
@@ -80,7 +80,7 @@ export GEMINI_API_KEY="YOUR_GEMINI_API_KEY"
 ## 4) One-shot Task
 
 ```bash
-cd /home/shaon/mini-turtlebot/ros2_ws/ai_pipeline
+cd /home/shaon/mini-turtlebot/ai_pipeline
 source .venv/bin/activate
 export GEMINI_API_KEY="YOUR_GEMINI_API_KEY"
 ./run_task.sh --task "move forward for 2 seconds, then stop"
@@ -126,7 +126,7 @@ Two CSV metric files are generated (append-only by default):
 ### Analyze metrics
 
 ```bash
-cd /home/shaon/mini-turtlebot/ros2_ws/ai_pipeline
+cd /home/shaon/mini-turtlebot/ai_pipeline
 source .venv/bin/activate
 python3 analyze_metrics.py \
   --ailinker-csv /tmp/minitb_ai_pipeline/ailinker_metrics.csv \
@@ -146,14 +146,14 @@ rm -f /tmp/minitb_ai_pipeline/ailinker_metrics.csv /tmp/minitb_ai_pipeline/behav
 
 2) Start stack:
 ```bash
-cd /home/shaon/mini-turtlebot/ros2_ws/ai_pipeline
+cd /home/shaon/mini-turtlebot/ai_pipeline
 source .venv/bin/activate
 ./start_rosfree_stack.sh --robot-ip 192.168.0.78 --robot-id tb_01
 ```
 
 3) Run one controlled scenario (example):
 ```bash
-cd /home/shaon/mini-turtlebot/ros2_ws/ai_pipeline
+cd /home/shaon/mini-turtlebot/ai_pipeline
 source .venv/bin/activate
 export GEMINI_API_KEY="YOUR_GEMINI_API_KEY"
 ./run_task.sh \
@@ -181,7 +181,7 @@ python3 analyze_metrics.py \
 
 7) Stop stack when done:
 ```bash
-cd /home/shaon/mini-turtlebot/ros2_ws/ai_pipeline
+cd /home/shaon/mini-turtlebot/ai_pipeline
 ./stop_rosfree_stack.sh
 ```
 

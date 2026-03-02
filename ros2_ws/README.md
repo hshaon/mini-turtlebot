@@ -1,5 +1,7 @@
 # ROS2 Graph Test (New Architecture)
 
+> Note: The ROS-free AI pipeline is now located at `/home/shaon/mini-turtlebot/ai_pipeline`.
+
 This guide describes how to bring up the **ROS pipeline** using the **new architecture** where:
 
 - **`roslinker`** is the only process that should own the robot TCP connection during ROS testing.

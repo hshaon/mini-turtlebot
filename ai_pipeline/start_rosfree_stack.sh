@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-CORE_BIN="${CORE_BIN:-${REPO_ROOT}/../atrbridge_core/build/atrbridge_ws_gateway}"
+CORE_BIN="${CORE_BIN:-${REPO_ROOT}/atrbridge_core/build/atrbridge_ws_gateway}"
 
 ROBOT_IP="${ROBOT_IP:-192.168.0.78}"
 TCP_PORT="${TCP_PORT:-9000}"
@@ -127,4 +127,3 @@ echo "  gateway log:  ${GW_LOG}"
 echo "  ailinker log: ${AIL_LOG}"
 echo "  pid file:     ${PID_FILE}"
 echo "Stop with: ${SCRIPT_DIR}/stop_rosfree_stack.sh"
-

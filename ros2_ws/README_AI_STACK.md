@@ -5,6 +5,10 @@ This project provides two scripts:
 - `launch_ai_stack.sh`: starts ATRBridge gateway + AILinker tool server (+ optional orchestrator)
 - `ai_control_cli.sh`: interactive natural-language control CLI
 
+> Scope note: this README is for the **ROS-based AI stack inside `ros2_ws`**.
+> The **fully ROS-free pipeline** lives at:
+> `/home/shaon/mini-turtlebot/ai_pipeline/README.md`
+
 ### Prerequisites
 
 - ROS 2 Jazzy installed
