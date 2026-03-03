@@ -226,3 +226,41 @@ rm -f /tmp/minitb_ai_pipeline/ailinker_metrics.csv /tmp/minitb_ai_pipeline/behav
 6) Include failure rates:
 - `cmd_exec.ok_rate`
 - HTTP 429 counts in `llm_call.http_status_counts`
+
+---
+
+## 8) Automated Benchmark (Your Two Prompts + 30s Cooldown)
+
+This script runs the two prompts you used, with a wait before each run (default 30s for free tier limits), and archives clean scenario CSV files plus a text report.
+
+Prompts baked in:
+- S1: `move forward for 2 seconds, then stop`
+- S2: `move forward for 1 second, then rotate 180 degree and move forward for 1 second`
+
+Run:
+```bash
+cd /home/shaon/mini-turtlebot/ai_pipeline
+source .venv/bin/activate
+export GEMINI_API_KEY="YOUR_GEMINI_API_KEY"
+./run_benchmark.sh
+```
+
+Defaults:
+- `--wait-seconds 30`
+- `--n1 6`
+- `--n2 5`
+- `--max-steps 2`
+- `--llm-max-retries 2`
+
+Custom example:
+```bash
+./run_benchmark.sh --wait-seconds 30 --n1 6 --n2 5 --max-steps 2 --llm-max-retries 2
+```
+
+Outputs (in `/tmp/minitb_ai_pipeline/archive`):
+- `ailinker_s1_forward2s_<timestamp>.csv`
+- `behavior_s1_forward2s_<timestamp>.csv`
+- `report_s1_forward2s_<timestamp>.txt`
+- `ailinker_s2_fwd1s_rot180_fwd1s_<timestamp>.csv`
+- `behavior_s2_fwd1s_rot180_fwd1s_<timestamp>.csv`
+- `report_s2_fwd1s_rot180_fwd1s_<timestamp>.txt`
